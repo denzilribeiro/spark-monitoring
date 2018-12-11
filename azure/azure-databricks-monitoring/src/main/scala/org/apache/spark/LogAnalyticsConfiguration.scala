@@ -7,13 +7,16 @@ import org.apache.spark.internal.Logging
 
 private[spark] trait LogAnalyticsConfiguration extends Logging {
   protected def getWorkspaceId: Option[String]
+
   protected def getSecret: Option[String]
+
   protected def getLogType: String
+
   protected def getTimestampFieldName: Option[String]
 
   val workspaceId: String = {
     val value = getWorkspaceId
-    require (value.isDefined, "A Log Analytics Workspace ID is required")
+    require(value.isDefined, "A Log Analytics Workspace ID is required")
     logInfo(s"Setting workspaceId to ${value.get}")
     value.get
   }
@@ -49,6 +52,10 @@ private[spark] object LogAnalyticsSinkConfiguration {
   private[spark] val LOGANALYTICS_DEFAULT_LOGTYPE = "SparkMetric"
   private[spark] val LOGANALYTICS_DEFAULT_PERIOD = "10"
   private[spark] val LOGANALYTICS_DEFAULT_UNIT = "SECONDS"
+
+  private[spark] val ENV_LOG_ANALYTICS_WORKSPACEID = "LOG_ANALYTICS_WORKSPACEID"
+
+  private[spark] val ENV_LOG_ANALYTICS_SECRET = "LOG_ANALYTICS_SECRET"
 }
 
 private[spark] class LogAnalyticsSinkConfiguration(properties: Properties)
@@ -56,9 +63,27 @@ private[spark] class LogAnalyticsSinkConfiguration(properties: Properties)
 
   import LogAnalyticsSinkConfiguration._
 
-  override def getWorkspaceId: Option[String] = Option(properties.getProperty(LOGANALYTICS_KEY_WORKSPACEID))
+  override def getWorkspaceId: Option[String] = {
 
-  override def getSecret: Option[String] = Option(properties.getProperty(LOGANALYTICS_KEY_SECRET))
+    if (sys.env.contains(ENV_LOG_ANALYTICS_WORKSPACEID)) {
+      sys.env.get(ENV_LOG_ANALYTICS_WORKSPACEID)
+    }
+    else {
+      Option(properties.getProperty(LOGANALYTICS_KEY_WORKSPACEID))
+    }
+
+  }
+
+  override def getSecret: Option[String] = {
+
+    if (sys.env.contains(ENV_LOG_ANALYTICS_SECRET)) {
+      sys.env.get(ENV_LOG_ANALYTICS_SECRET)
+    }
+    else {
+      Option(properties.getProperty(LOGANALYTICS_KEY_SECRET))
+    }
+
+  }
 
   override def getLogType: String = properties.getProperty(LOGANALYTICS_KEY_LOGTYPE, LOGANALYTICS_DEFAULT_LOGTYPE)
 

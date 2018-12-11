@@ -1,6 +1,5 @@
 package org.apache.spark
 
-import com.databricks.dbutils_v1.DBUtilsHolder.dbutils.secrets
 import org.apache.spark.internal.Logging
 
 private[spark] trait LogAnalyticsConfiguration extends Logging {
@@ -12,41 +11,19 @@ private[spark] trait LogAnalyticsConfiguration extends Logging {
 
   protected def getTimestampFieldName: Option[String]
 
-  protected val secretScopeAndKeyValidation = "^([a-zA-Z0-9_\\.-]{1,128})\\:([a-zA-Z0-9_\\.-]{1,128})$"
-    .r("scope", "key")
 
   val workspaceId: String = {
     val value = getWorkspaceId
-    val finalValue = value match {
-      case Some(scopeAndKey) => {
-        secretScopeAndKeyValidation.findFirstMatchIn(scopeAndKey) match {
-          case Some(x) => {
-            secrets.get(x.group("scope"), x.group("key"))
-          }
-          case None => scopeAndKey
-        }
-      }
-      case None => throw new SparkException(s"A Log Analytics Workspace ID is required")
-    }
-    logInfo(s"Setting workspaceId to $finalValue")
-    finalValue
+    require(value.isDefined, "A Log Analytics Workspace ID is required")
+    logInfo(s"Setting workspaceId to ${value.get}")
+    value.get
+
   }
 
   val secret: String = {
     val value = getSecret
-    val finalValue = value match {
-      case Some(scopeAndKey) => {
-        secretScopeAndKeyValidation.findFirstMatchIn(scopeAndKey) match {
-          case Some(x) => {
-            secrets.get(x.group("scope"), x.group("key"))
-          }
-          case None => scopeAndKey
-        }
-      }
-      case None => throw new SparkException(s"A Log Analytics Secret is required")
-    }
-    logInfo(s"Setting workspace key to $finalValue")
-    finalValue
+    require(value.isDefined, "A Log Analytics Workspace Key is required")
+    value.get
   }
 
 
@@ -81,6 +58,10 @@ private[spark] object LogAnalyticsListenerConfiguration {
   private[spark] val LOG_BLOCK_UPDATES = CONFIG_PREFIX + ".logBlockUpdates"
 
   private[spark] val DEFAULT_LOG_BLOCK_UPDATES = false
+
+  private[spark] val ENV_LOG_ANALYTICS_WORKSPACEID = "LOG_ANALYTICS_WORKSPACEID"
+
+  private[spark] val ENV_LOG_ANALYTICS_SECRET = "LOG_ANALYTICS_SECRET"
 }
 
 private[spark] class LogAnalyticsListenerConfiguration(sparkConf: SparkConf)
@@ -88,9 +69,27 @@ private[spark] class LogAnalyticsListenerConfiguration(sparkConf: SparkConf)
 
   import LogAnalyticsListenerConfiguration._
 
-  override def getWorkspaceId: Option[String] = sparkConf.getOption(WORKSPACE_ID)
+  override def getWorkspaceId: Option[String] = {
 
-  override def getSecret: Option[String] = sparkConf.getOption(SECRET)
+    if (sys.env.contains(ENV_LOG_ANALYTICS_WORKSPACEID)) {
+      sys.env.get(ENV_LOG_ANALYTICS_WORKSPACEID)
+    }
+    else {
+      sparkConf.getOption(WORKSPACE_ID)
+    }
+
+  }
+
+  override def getSecret: Option[String] = {
+
+    if (sys.env.contains(ENV_LOG_ANALYTICS_SECRET)) {
+      sys.env.get(ENV_LOG_ANALYTICS_SECRET)
+    }
+    else {
+      sparkConf.getOption(SECRET)
+    }
+
+  }
 
   override def getLogType: String = sparkConf.get(LOG_TYPE, DEFAULT_LOG_TYPE)
 
