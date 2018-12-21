@@ -208,6 +208,15 @@
                     <configuration>
                         <!-- Tests will be run with scalatest-maven-plugin instead -->
                         <!--<skipTests>true</skipTests>-->
+                        <includes>
+                            <include>**/Test*.java</include>
+                            <include>**/*Test.java</include>
+                            <include>**/*TestCase.java</include>
+                            <include>**/*Suite.java</include>
+                        </includes>
+                        <systemProperties>
+                            <log4j.configuration>file:src/test/resources/log4j.properties</log4j.configuration>
+                        </systemProperties>
                     </configuration>
                 </plugin>
                 <plugin>

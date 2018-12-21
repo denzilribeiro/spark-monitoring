@@ -151,6 +151,8 @@ public class LogAnalyticsClient implements Closeable {
                 }
             }
         } catch (Exception ex) {
+            System.out.println(ex.getMessage());
+            ex.printStackTrace();
             throw new IOException("Error sending to Log Analytics", ex);
         }
     }
