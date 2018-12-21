@@ -20,15 +20,19 @@ class Buffer {
      */
     static ExecutorService executor = Executors.newCachedThreadPool(new DaemonThreadFactory());
 
-    public Buffer(LogAnalyticsClient client, String timeGeneratedField) {
+    public Buffer(LogAnalyticsClient client, String timeGeneratedField,
+                  int maxMessageSizeInBytes, int batchTimeInMilliseconds) {
         this.timeGeneratedField = timeGeneratedField;
-        this.sendBuffer = new SendBuffer(client, this.executor);
+        this.sendBuffer = new SendBuffer(client, this.executor,
+            maxMessageSizeInBytes, batchTimeInMilliseconds);
     }
 
-    public Future<Void> sendMessageAsync(String message) {
-        ClientFuture future = this.sendBuffer.sendMessage(message);
-        future.setBuffer(this);
-        return future;
+//    public Future<Void> sendMessageAsync(String message) {
+    public void sendMessage(String message) {
+//        ClientFuture future = this.sendBuffer.sendMessage(message);
+//        future.setBuffer(this);
+//        return future;
+        this.sendBuffer.sendMessage(message);
     }
 
     /**

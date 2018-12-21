@@ -1,5 +1,7 @@
 package org.apache.spark.listeners.microsoft.pnp.loganalytics;
 
+import java.awt.image.ImagingOpException;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Executor;
@@ -20,10 +22,12 @@ public class SendBuffer {
     /** Url of our queue */
     //private final String qUrl;
     // We'll set this to 25MB, just in case.  LogAnalytics has a limit of 30 MB
-    private final int maxBatchSizeBytes = 1024 * 1024 * 25;
+    //private final int maxBatchSizeBytes = 1024 * 1024 * 25;
+    private int maxBatchSizeBytes;
 
     // Set it to 10 seconds for now
-    private final int maxBatchOpenMs = 10000;
+    //private final int maxBatchOpenMs = 10000;
+    private int maxBatchOpenMs;
     /**
      * The {@code AmazonSQS} client to use for this buffer's operations.
      */
@@ -53,10 +57,13 @@ public class SendBuffer {
     private final Semaphore inflightSendMessageBatches;
 
     //SendQueueBuffer(AmazonSQS sqsClient, Executor executor, QueueBufferConfig paramConfig, String url) {
-    SendBuffer(LogAnalyticsClient client, Executor executor) {
+    SendBuffer(LogAnalyticsClient client, Executor executor,
+               int maxMessageSizeInBytes, int batchTimeInMilliseconds) {
         //this.sqsClient = sqsClient;
         this.client = client;
         this.executor = executor;
+        this.maxBatchSizeBytes = maxMessageSizeInBytes;
+        this.maxBatchOpenMs = batchTimeInMilliseconds;
 //        this.config = paramConfig;
 //        qUrl = url;
 //        int maxBatch = config.getMaxInflightOutboundBatches();
@@ -80,10 +87,13 @@ public class SendBuffer {
 //                openSendMessageBatchTask, request, inflightSendMessageBatches, callback);
 //        return result;
 //    }
-    public ClientFuture sendMessage(String request) {
-        ClientFuture result = submitOutboundRequest(sendMessageLock,
-                openSendMessageBatchTask, request, inflightSendMessageBatches);
-        return result;
+    //public ClientFuture sendMessage(String request) {
+    public void sendMessage(String message) {
+//        ClientFuture result = submitOutboundRequest(sendMessageLock,
+//                openSendMessageBatchTask, request, inflightSendMessageBatches);
+//        return result;
+        submitOutboundRequest(sendMessageLock,
+                this.openSendMessageBatchTask, message, inflightSendMessageBatches);
     }
 
 //    /**
@@ -140,7 +150,7 @@ public class SendBuffer {
      * @return never null
      */
     @SuppressWarnings("unchecked")
-    ClientFuture submitOutboundRequest(Object operationLock,
+    private void submitOutboundRequest(Object operationLock,
                                        SendRequestTask[] openOutboundBatchTask,
                                        String request,
                                        final Semaphore inflightOperationBatches) {
@@ -149,15 +159,26 @@ public class SendBuffer {
          * maxBatchOpenMs elapses. The total number of batch task in flight is controlled by the
          * inflightOperationBatch semaphore capped at maxInflightOutboundBatches.
          */
-        ClientFuture theFuture = null;
+        //ClientFuture theFuture = null;
         try {
             synchronized (operationLock) {
                 if (openOutboundBatchTask[0] == null
-                        || ((theFuture = openOutboundBatchTask[0].addRequest(request))) == null) {
+                        || (!openOutboundBatchTask[0].addRequest(request))) {
+                        //|| ((theFuture = openOutboundBatchTask[0].addRequest(request))) == null) {
 
-                    //OBT obt = (OBT) newOutboundBatchTask(request);
+                    System.out.println("Creating new task");
+                    // We need a new task because one of the following is true:
+                    // 1.  We don't have one yet (i.e. first message!)
+                    // 2.  The task is full
+                    // 3.  The task's timeout elapsed
                     SendRequestTask obt = new SendRequestTask();
+                    // Make sure we don't have too many in flight at once.
+                    // This WILL block the calling code, but it's simpler than
+                    // building a circular buffer, although we are sort of doing that. :)
+                    // Not sure we need this yet!
+                    System.out.println("Acquiring semaphore");
                     inflightOperationBatches.acquire();
+                    System.out.println("Acquired semaphore");
                     openOutboundBatchTask[0] = obt;
 
                     // Register a listener for the event signaling that the
@@ -165,7 +186,9 @@ public class SendBuffer {
                     openOutboundBatchTask[0].setOnCompleted(new Listener<SendRequestTask>() {
                         @Override
                         public void invoke(SendRequestTask task) {
+                            System.out.println("Releasing semaphore");
                             inflightOperationBatches.release();
+                            System.out.println("Released semaphore");
                         }
                     });
 
@@ -174,15 +197,21 @@ public class SendBuffer {
 //                                + inflightOperationBatches.availablePermits() + " free slots remain");
 //                    }
 
-                    theFuture = openOutboundBatchTask[0].addRequest(request);
-                    executor.execute(openOutboundBatchTask[0]);
-                    if (null == theFuture) {
-                        // this can happen only if the request itself is flawed,
-                        // so that it can't be added to any batch, even a brand
-                        // new one
-                        //throw new AmazonClientException("Failed to schedule request " + request + " for execution");
-                        throw new RuntimeException("Failed to schedule request");
+                    //theFuture = openOutboundBatchTask[0].addRequest(request);
+                    // There is an edge case here.
+                    // If the max bytes are too small for the first message, things go
+                    // wonky, so let's bail
+                    if (!openOutboundBatchTask[0].addRequest(request)) {
+                        throw new RuntimeException("Failed to schedule batch");
                     }
+                    executor.execute(openOutboundBatchTask[0]);
+//                    if (null == theFuture) {
+//                        // this can happen only if the request itself is flawed,
+//                        // so that it can't be added to any batch, even a brand
+//                        // new one
+//                        //throw new AmazonClientException("Failed to schedule request " + request + " for execution");
+//                        throw new RuntimeException("Failed to schedule request");
+//                    }
                 }
             }
 
@@ -194,7 +223,7 @@ public class SendBuffer {
             throw toThrow;
         }
 
-        return theFuture;
+        //return theFuture;
     }
 
     /**
@@ -213,17 +242,11 @@ public class SendBuffer {
 
         int batchSizeBytes = 0;
         protected final List<String> requests;
-        protected final ArrayList<ClientFuture> futures;
-
         private boolean closed;
-
         private volatile Listener<SendRequestTask> onCompleted;
 
         public SendRequestTask() {
-            //this.requests = new ArrayList<R>(config.getMaxBatchSize());
-            this.requests = new ArrayList();
-            //this.futures = new ArrayList<QueueBufferFuture<R, Result>>(config.getMaxBatchSize());
-            this.futures = new ArrayList();
+            this.requests = new ArrayList<>();
         }
 
         //public void setOnCompleted(Listener<OutboundBatchTask<R, Result>> value) {
@@ -238,23 +261,25 @@ public class SendBuffer {
          *         addition failed.
          */
         //public synchronized QueueBufferFuture<R, Result> addRequest(R request, QueueBufferCallback<R, Result> callback) {
-        public synchronized ClientFuture addRequest(String request) {
+        public synchronized boolean addRequest(String request) {
 
             if (closed) {
-                return null;
+                return false;
             }
 
 //            QueueBufferFuture<R, Result> theFuture = addIfAllowed(request, callback);
-            ClientFuture theFuture = addIfAllowed(request);
-
-            // if the addition did not work, or this addition made us full,
-            // we can close the request.
-            if ((null == theFuture) || isFull()) {
+            //ClientFuture theFuture = addIfAllowed(request);
+            boolean wasAdded = addIfAllowed(request);
+            // If we can't add the request (because we are full), close the batch
+            //if ((null == theFuture) || isFull()) {
+            if (!wasAdded) {
+                System.out.println("Could not add.  Closing");
                 closed = true;
                 notify();
             }
 
-            return theFuture;
+            //return theFuture;
+            return wasAdded;
         }
 
         /**
@@ -265,20 +290,16 @@ public class SendBuffer {
          * @return the future that will be signaled when the request is completed and can be used to
          *         retrieve the result. Can be null if the addition could not be done
          */
-        private ClientFuture addIfAllowed(String request) {
+        private boolean addIfAllowed(String request) {
 
             if (isOkToAdd(request)) {
-
+                System.out.println("Allowed to add");
                 requests.add(request);
-
-                ClientFuture theFuture = new ClientFuture();
-
-                futures.add(theFuture);
                 onRequestAdded(request);
-                return theFuture;
+                return true;
 
             } else {
-                return null;
+                return false;
             }
         }
 
@@ -291,9 +312,6 @@ public class SendBuffer {
          * @return true if the request is okay to add, false otherwise
          */
         protected boolean isOkToAdd(String request) {
-            //return requests.size() < config.getMaxBatchSize();
-//            return (requests.size() < config.getMaxBatchSize())
-//                    && ((request.getMessageBody().getBytes().length + batchSizeBytes) <= config.getMaxBatchSizeBytes());
             return ((request.getBytes().length + batchSizeBytes) <= maxBatchSizeBytes);
         }
 
@@ -305,7 +323,6 @@ public class SendBuffer {
          *            the request that was added
          */
         protected void onRequestAdded(String request) {
-            //batchSizeBytes += request.getMessageBody().getBytes().length;
             batchSizeBytes += request.getBytes().length;
         }
 
@@ -316,8 +333,6 @@ public class SendBuffer {
          * @return whether the buffer is filled to capacity
          */
         protected boolean isFull() {
-            //return requests.size() >= config.getMaxBatchSize();
-            //return (requests.size() >= config.getMaxBatchSize()) || (batchSizeBytes >= config.getMaxBatchSizeBytes());
             return (batchSizeBytes >= maxBatchSizeBytes);
         }
 
@@ -327,42 +342,22 @@ public class SendBuffer {
          * made while holding the lock.
          */
 //        protected void process(List<R> requests, List<QueueBufferFuture<R, Result>> futures) {
-        protected void process(List<String> requests, List<ClientFuture> futures) {
+        protected void process(List<String> requests) {
             if (requests.isEmpty()) {
+                System.out.println("Empty!");
                 return;
             }
 
-//            SendMessageBatchRequest batchRequest = new SendMessageBatchRequest().withQueueUrl(qUrl);
-//            ResultConverter.appendUserAgent(batchRequest, AmazonSQSBufferedAsyncClient.USER_AGENT);
-//
-//            List<SendMessageBatchRequestEntry> entries = new ArrayList<SendMessageBatchRequestEntry>(requests.size());
-//            for (int i = 0, n = requests.size(); i < n; i++) {
-//                entries.add(RequestCopyUtils.createSendMessageBatchRequestEntryFrom(Integer.toString(i),
-//                        requests.get(i)));
-//            }
-//            batchRequest.setEntries(entries);
-//
-//            SendMessageBatchResult batchResult = sqsClient.sendMessageBatch(batchRequest);
-//
-//            for (SendMessageBatchResultEntry entry : batchResult.getSuccessful()) {
-//                int index = Integer.parseInt(entry.getId());
-//                futures.get(index).setSuccess(ResultConverter.convert(entry));
-//            }
-//
-//            for (BatchResultErrorEntry errorEntry : batchResult.getFailed()) {
-//                int index = Integer.parseInt(errorEntry.getId());
-//                if (errorEntry.isSenderFault()) {
-//                    futures.get(index).setFailure(ResultConverter.convert(errorEntry));
-//                } else {
-//                    // retry.
-//                    try {
-//                        // this will retry internally up to 3 times.
-//                        futures.get(index).setSuccess(sqsClient.sendMessage(requests.get(index)));
-//                    } catch (AmazonClientException ace) {
-//                        futures.get(index).setFailure(ace);
-//                    }
-//                }
-//            }
+            // Build up Log Analytics "batch" and send.
+            // How should we handle failures?  I think there is retry built into the HttpClient,
+            // but what if that fails as well?  I suspect we should just log it and move on.
+
+            // Fake it for now because of tests
+            try {
+                client.send("blahblahblah", "need logtype!!!");
+            } catch (IOException ioe) {
+                System.out.println(ioe.getMessage());
+            }
         }
 
         @Override
@@ -373,10 +368,7 @@ public class SendBuffer {
                         + maxBatchOpenMs + 1;
                 long t = TimeUnit.MILLISECONDS.convert(System.nanoTime(), TimeUnit.NANOSECONDS);
 
-                //List<R> requests;
                 List<String> requests;
-                //List<QueueBufferFuture<R, Result>> futures;
-                List<ClientFuture> futures;
 
                 synchronized (this) {
                     while (!closed && (t < deadlineMs)) {
@@ -389,13 +381,11 @@ public class SendBuffer {
 
                     closed = true;
 
-//                    requests = new ArrayList<R>(this.requests);
-                    requests = new ArrayList(this.requests);
-//                    futures = new ArrayList<QueueBufferFuture<R, Result>>(this.futures);
-                    futures = new ArrayList(this.futures);
+                    requests = new ArrayList<>(this.requests);
                 }
 
-                process(requests, futures);
+                System.out.println("Processing on thread " + Thread.currentThread().getName());
+                process(requests);
 
             } catch (InterruptedException e) {
                 failAll(e);
@@ -406,23 +396,24 @@ public class SendBuffer {
                 throw e;
             } catch (Error e) {
                 //failAll(new AmazonClientException("Error encountered", e));
-                failAll(new Exception("Eror encountered", e));
+                failAll(new Exception("Error encountered", e));
                 throw e;
             } finally {
-//                // make a copy of the listener since it (theoretically) can be
-//                // modified from the outside.
-//                Listener<OutboundBatchTask<R, Result>> listener = onCompleted;
-//                if (listener != null) {
-//                    listener.invoke(this);
-//                }
+                // make a copy of the listener since it (theoretically) can be
+                // modified from the outside.
+                Listener<SendRequestTask> listener = onCompleted;
+                if (listener != null) {
+                    listener.invoke(this);
+                }
             }
         }
 
+        // There is nothing to "fail all" on...it's all one shot. :)
         private void failAll(Exception e) {
 //            for (QueueBufferFuture<R, Result> f : futures) {
-            for (ClientFuture f : futures) {
-                f.setFailure(e);
-            }
+//            for (ClientFuture f : futures) {
+//                f.setFailure(e);
+//            }
         }
     }
 }
